@@ -206,6 +206,18 @@ func (t *TASKQ) CreateMultiTasksIfNotExist(taskList []TaskCreateInfo) error {
 	return nil
 }
 
+func (t *TASKQ) SetTaskContent(taskname string, content string) error {
+	conn := t.db.NewConn()
+	defer conn.Close()
+
+	szSQL := fmt.Sprintf(`UPDATE %s SET content=? WHERE taskname=?`, t.tableName)
+	if err := conn.Exec(szSQL, content, taskname); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (t *TASKQ) DeleteTask(taskname string) error {
 	conn := t.db.NewConn()
 	defer conn.Close()
