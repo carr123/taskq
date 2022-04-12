@@ -3,7 +3,7 @@ module github.com/carr123/taskq
 go 1.17
 
 require (
-	github.com/carr123/easysql v1.0.2
+	github.com/carr123/easysql v1.1.0
 	github.com/carr123/workerpool v1.0.1
 )
 

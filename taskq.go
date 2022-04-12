@@ -14,6 +14,8 @@ import (
 	dbserver "github.com/carr123/easysql/cockroach"
 )
 
+//v1.0.2
+
 const (
 	DEFAULT_TABLE_NAME = "task_queue_2021"
 )
