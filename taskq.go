@@ -1,4 +1,4 @@
-package taskQ
+package taskq
 
 import (
 	"errors"
