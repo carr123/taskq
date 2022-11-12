@@ -14,10 +14,9 @@ import (
 	dbserver "github.com/carr123/easysql/cockroach"
 )
 
-//v1.0.2
-
 const (
 	DEFAULT_TABLE_NAME = "task_queue_2021"
+	version            = "1.0.4"
 )
 
 type STRING = easysql.STRING
@@ -61,6 +60,10 @@ type TASKQ struct {
 	refreshTaskIDs  map[string]struct{}
 }
 
+func Version() string {
+	return version
+}
+
 func NewtaskQ() *TASKQ {
 	q := &TASKQ{
 		Recover:         DEFAULT_RECOVER,
@@ -78,7 +81,7 @@ func NewtaskQ() *TASKQ {
 	return q
 }
 
-//数据库连接字符串: postgresql://user:passwd@10.91.26.225:2625/dbname
+//数据库连接字符串: postgresql://user:passwd@127.0.0.1:26257/dbname
 func (t *TASKQ) SetDBURL(dbURL string) {
 	t.dbUrl = dbURL
 }
@@ -179,7 +182,7 @@ func (t *TASKQ) CreateTaskIfNotExist(taskname string, nextruntime time.Time, con
 	defer conn.Close()
 
 	szSQL := fmt.Sprintf(`INSERT INTO %s (taskname,nextruntime,content) VALUES (?,?,?) ON CONFLICT(taskname) DO NOTHING`, t.tableName)
-	if err := conn.Exec(szSQL, taskname, nextruntime.Format("2006-01-02 15:04:05"), content); err != nil {
+	if err := conn.Exec(szSQL, taskname, easysql.NewDateTime(nextruntime), content); err != nil {
 		return err
 	}
 
@@ -194,7 +197,7 @@ func (t *TASKQ) CreateMultiTasksIfNotExist(taskList []TaskCreateInfo) error {
 	nCol := 3
 	args := make([]interface{}, 0, nCol*len(taskList))
 	for _, item := range taskList {
-		args = append(args, item.TaskName, item.Nextruntime.Format("2006-01-02 15:04:05"), item.Content)
+		args = append(args, item.TaskName, easysql.NewDateTime(item.Nextruntime), item.Content)
 	}
 
 	conn := t.db.NewConn()
@@ -318,9 +321,9 @@ func (t *TASKQ) _allocTaskByName(nameprefix string, maxcount int) {
 
 	var err error
 	err = t.db.ExecInTx(func(conn *dbserver.Conn) error {
-		szTimeNow := time.Now().Format("2006-01-02 15:04:05")
-		szSQL := fmt.Sprintf(`SELECT taskid,taskname,lastruntime,nextruntime,content,fails FROM %s WHERE nextruntime <= ? and working=false and taskname like ? limit ? FOR UPDATE`, t.tableName)
-		if err := conn.Select(&taskarray, szSQL, szTimeNow, nameprefix+"%", maxcount); err != nil {
+		timeNow := easysql.NewDateTime(time.Now())
+		szSQL := fmt.Sprintf(`SELECT taskid,taskname,lastruntime,nextruntime,content,fails FROM %s WHERE nextruntime <= ? and working=false and taskname like ? order by nextruntime asc limit ? FOR UPDATE`, t.tableName)
+		if err := conn.Select(&taskarray, szSQL, timeNow, nameprefix+"%", maxcount); err != nil {
 			return err
 		}
 
@@ -334,7 +337,7 @@ func (t *TASKQ) _allocTaskByName(nameprefix string, maxcount int) {
 		}
 
 		szSQL = fmt.Sprintf(`UPDATE %s SET working=true,lastruntime=?,heartbeattime=? WHERE taskid IN (?)`, t.tableName)
-		if err := conn.Exec(szSQL, szTimeNow, szTimeNow, ids); err != nil {
+		if err := conn.Exec(szSQL, timeNow, timeNow, ids); err != nil {
 			return err
 		}
 
@@ -351,8 +354,8 @@ func (t *TASKQ) _allocTaskByName(nameprefix string, maxcount int) {
 		mp["nameprefix"] = nameprefix
 		mp["taskid"] = task.Taskid.String()
 		mp["taskname"] = task.Taskname.String()
-		mp["lastruntime"] = task.Lastruntime.String()
-		mp["nextruntime"] = task.Nextruntime.String()
+		mp["lastruntime"] = task.Lastruntime.ToTime()
+		mp["nextruntime"] = task.Nextruntime.ToTime()
 		mp["content"] = task.Content.String()
 		mp["fails"] = int(task.Fails.Int64)
 		t.workpool.PushItem(mp)
@@ -365,13 +368,13 @@ func (t *TASKQ) _allocTaskByName(nameprefix string, maxcount int) {
 func (t *TASKQ) _updateTaskStatus() {
 	defer t.Recover()
 
-	szTimeDue := time.Now().Add(-t.execTimeout).Format("2006-01-02 15:04:05")
+	timeDue := time.Now().Add(-t.execTimeout)
 
 	conn := t.db.NewConn()
 	defer conn.Close()
 
 	szSQL := fmt.Sprintf(`UPDATE %s SET working=false WHERE heartbeattime < ? and working=true`, t.tableName)
-	if err := conn.Exec(szSQL, szTimeDue); err != nil {
+	if err := conn.Exec(szSQL, easysql.NewDateTime(timeDue)); err != nil {
 		panic(err)
 		return
 	}
@@ -391,13 +394,11 @@ func (t *TASKQ) _reclaimTask() {
 		return
 	}
 
-	szNow := time.Now().Format("2006-01-02 15:04:05")
-
 	conn := t.db.NewConn()
 	defer conn.Close()
 
 	szSQL := fmt.Sprintf(`UPDATE %s SET heartbeattime=? WHERE taskid in (?)`, t.tableName)
-	if err := conn.Exec(szSQL, szNow, ids); err != nil {
+	if err := conn.Exec(szSQL, easysql.NewDateTime(time.Now()), ids); err != nil {
 		panic(err)
 		return
 	}
@@ -432,7 +433,7 @@ func (t *TASKQ) _SetNextRunTime(taskid string, datetime time.Time, fails int) er
 	defer conn.Close()
 
 	szSQL := fmt.Sprintf(`UPDATE %s SET nextruntime=?, working=false, fails=? WHERE taskid=?`, t.tableName)
-	if err := conn.Exec(szSQL, datetime.Format("2006-01-02 15:04:05"), fails, taskid); err != nil {
+	if err := conn.Exec(szSQL, easysql.NewDateTime(datetime), fails, taskid); err != nil {
 		return err
 	}
 
@@ -528,33 +529,16 @@ func (t *internalTaskImpl) GetContent() string {
 }
 
 func (t *internalTaskImpl) GetNextRuntime() time.Time {
-	nextruntime := t.info["nextruntime"].(string)
-	tm, err := time.Parse("2006-01-02 15:04:05", nextruntime)
-	if err != nil {
-		panic(err)
-	}
-	return tm
+	return t.info["nextruntime"].(time.Time)
 }
 
 func (t *internalTaskImpl) GetLastRuntime() time.Time {
-	var err error
-	var tm time.Time
-
-	lastruntime := t.info["lastruntime"].(string)
-	if len(lastruntime) == 0 {
-		return tm
-	}
-
-	tm, err = time.Parse("2006-01-02 15:04:05", lastruntime)
-	if err != nil {
-		panic(err)
-	}
-	return tm
+	return t.info["lastruntime"].(time.Time)
 }
 
-func (t *internalTaskImpl) SetNextRuntime(datetime time.Time) error {
+func (t *internalTaskImpl) SetNextRuntime(tm time.Time) error {
 	t.action = "setnextruntime"
-	t.nextRunTime = datetime
+	t.nextRunTime = tm
 	return nil
 }
 
@@ -578,60 +562,3 @@ var DEFAULT_RECOVER func() = func() {
 		log.Println(err)
 	}
 }
-
-/*
-func main() {
-	Recover := fmx.RecoverFn(func(s string) {
-		log.Println(s)
-	})
-
-	queue := taskQ.NewtaskQ()
-	queue.SetDBURL("postgresql://root:robotdb@10.91.26.225:2625/dadibaostat")
-	queue.SetPollingInterval(time.Second * 6)
-	queue.SetExecTimeout(time.Second * 12)
-	queue.SetMaxGoroutine(5)
-	queue.SetRecover(Recover)
-
-	if err := queue.Start(); err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	if err := queue.CreateTaskIfNotExist("task2", time.Now().Add(time.Hour), "hello world"); err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	tasklist := make([]taskQ.TaskCreateInfo, 0, 100)
-	for k := 0; k < 100; k++ {
-		tasklist = append(tasklist, taskQ.TaskCreateInfo{
-			TaskName:    fmt.Sprintf("task%d", k),
-			Nextruntime: time.Now().Add(-time.Hour),
-			Content:     "taskinfo",
-		})
-	}
-	queue.CreateMultiTasksIfNotExist(tasklist)
-
-	queue.Subscribe("task", func(task taskQ.ITask) error {
-		taskName := task.GetTaskName()
-		content := task.GetContent()
-		fails := task.GetExecFailCount()
-		//tm := task.GetNextRuntime()
-		task.SetNextRuntime(time.Now().Add(time.Hour * 160))
-		log.Println("recv task:", taskName, " content:", content)
-		time.Sleep(time.Second * 2)
-		log.Println("task ", taskName, " exec exit")
-		return nil
-	})
-
-	time.Sleep(time.Second * 130)
-
-	log.Println("closing...")
-	queue.Close()
-	log.Println("closed")
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	wg.Wait()
-}
-*/

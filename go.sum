@@ -1,7 +1,11 @@
 github.com/ClickHouse/clickhouse-go v1.5.4/go.mod h1:EaI/sW7Azgz9UATzd5ZdZHRUhHgv5+JMS9NSr2smCJI=
+github.com/CloudyKit/router v0.0.0-20170501012743-15c4ed71df81 h1:yPqoZlWqkEpom78++E2PnDiBIwWQ4udG6QiqMEDrK1s=
+github.com/CloudyKit/router v0.0.0-20170501012743-15c4ed71df81/go.mod h1:C5dpOyEQ8OAubgEx/spN9JbnY+P6BrRZ0wzSkJfoJb4=
 github.com/bkaradzic/go-lz4 v1.0.0/go.mod h1:0YdlkowM3VswSROI7qDxhRvJ3sLhlFrRRwjwegp5jy4=
-github.com/carr123/easysql v1.1.0 h1:j8SVGu4S07x3XrW7bUAm8JLiEVaB5deWa9aPW8Zlilg=
-github.com/carr123/easysql v1.1.0/go.mod h1:laBIQ/VoQ5KnJZpgxMlbc6uQ0s3s9gqgis9oB1CzELU=
+github.com/carr123/easysql v1.1.1 h1:IfRsdBDrq1aWkiy+JN7MapxI1/hFOqT1k9B5Q/7d5sk=
+github.com/carr123/easysql v1.1.1/go.mod h1:laBIQ/VoQ5KnJZpgxMlbc6uQ0s3s9gqgis9oB1CzELU=
+github.com/carr123/fmx v1.0.3 h1:nUeNh2G33DciESV1BkJhuKIQESeshAEN6olyqedpZvA=
+github.com/carr123/fmx v1.0.3/go.mod h1:WgoKfarOcREc8XtNMyo5IN9Ohnn7zoF5zHzjF+W4l14=
 github.com/carr123/workerpool v1.0.1 h1:vn0n6v3F3wRKi1wl0jzmPxd/Lkw+nO7KDhE5Hr4AEyM=
 github.com/carr123/workerpool v1.0.1/go.mod h1:yFbMIP/KlU+2p55c13hhfwQbeBYy4/pluhajLziGVXs=
 github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58/go.mod h1:EOBUe0h4xcZ5GoxqC5SDxFQ8gwyZPKQoEzownBlhI80=
