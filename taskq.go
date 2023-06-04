@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 
 const (
 	DEFAULT_TABLE_NAME = "task_queue_2021"
-	version            = "1.0.4"
+	version            = "1.0.6"
 )
 
 type STRING = easysql.STRING
@@ -37,6 +38,8 @@ type ITask interface {
 	SetNextRuntime(datetime time.Time) error
 	DeleteTask() error
 }
+
+type FnHandler func(ITask) error
 
 type TaskCreateInfo struct {
 	TaskName    string
@@ -81,12 +84,11 @@ func NewtaskQ() *TASKQ {
 	return q
 }
 
-//数据库连接字符串: postgresql://user:passwd@127.0.0.1:26257/dbname
+//postgresql://user:passwd@127.0.0.1:26257/dbname
 func (t *TASKQ) SetDBURL(dbURL string) {
 	t.dbUrl = dbURL
 }
 
-//pollingInterval: 多久轮询一次数据库看有没有任务要执行
 func (t *TASKQ) SetPollingInterval(pollingInterval time.Duration) {
 	if pollingInterval < time.Second*3 {
 		panic(fmt.Sprintf("pollingInterval too small"))
@@ -95,7 +97,6 @@ func (t *TASKQ) SetPollingInterval(pollingInterval time.Duration) {
 	t.pollingInterval = pollingInterval
 }
 
-//execTimeout: 任务执行多久未结束认为执行失败需重新调度
 func (t *TASKQ) SetExecTimeout(execTimeout time.Duration) {
 	if execTimeout < time.Second*3 {
 		panic(fmt.Sprintf("execTimeout too small"))
@@ -104,7 +105,6 @@ func (t *TASKQ) SetExecTimeout(execTimeout time.Duration) {
 	t.execTimeout = execTimeout
 }
 
-//maxWorkers : 最多几个协程并发处理消息
 func (t *TASKQ) SetMaxGoroutine(maxWorkers int) {
 	if maxWorkers < 1 {
 		panic(fmt.Sprintf("maxWorkers too small"))
@@ -223,6 +223,18 @@ func (t *TASKQ) SetTaskContent(taskname string, content string) error {
 	return nil
 }
 
+func (t *TASKQ) SetTaskNextRuntime(taskname string, tm time.Time) error {
+	conn := t.db.NewConn()
+	defer conn.Close()
+
+	szSQL := fmt.Sprintf(`UPDATE %s SET nextruntime=? WHERE taskname=?`, t.tableName)
+	if err := conn.Exec(szSQL, tm, taskname); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (t *TASKQ) DeleteTask(taskname string) error {
 	conn := t.db.NewConn()
 	defer conn.Close()
@@ -235,7 +247,7 @@ func (t *TASKQ) DeleteTask(taskname string) error {
 	return nil
 }
 
-func (t *TASKQ) Subscribe(tasknameprefix string, handler func(ITask) error) {
+func (t *TASKQ) Subscribe(tasknameprefix string, handler FnHandler) {
 	t.locker.Lock()
 	defer t.locker.Unlock()
 
@@ -275,7 +287,7 @@ func (t *TASKQ) _checkTasks() {
 		}
 
 		if tmNow.Sub(lastRefreshTime) > t.execTimeout/3 {
-			t._reclaimTask() //确保处理中的任务不过时，不被其他人抢去
+			t._reclaimTask()
 			lastRefreshTime = tmNow
 		}
 	}
@@ -300,8 +312,15 @@ func (t *TASKQ) _pullNewTask() {
 		return names[i] > names[j]
 	})
 
-	for _, name := range names {
-		t._allocTaskByName(name, fetchCount)
+	var nIte int
+
+	for nIte < len(names) {
+		nBatch := len(names) - nIte
+		if nBatch > 100 {
+			nBatch = 100
+		}
+		t._allocTaskByName(names[nIte:nIte+nBatch], fetchCount)
+		nIte += nBatch
 		fetchCount = t.maxWorkers - t.workpool.GetPendingItemCount()
 		if fetchCount <= 0 {
 			break
@@ -309,7 +328,7 @@ func (t *TASKQ) _pullNewTask() {
 	}
 }
 
-func (t *TASKQ) _allocTaskByName(nameprefix string, maxcount int) {
+func (t *TASKQ) _allocTaskByName(nameprefix []string, maxcount int) {
 	var taskarray []struct {
 		Taskid      STRING   `db:"taskid"`
 		Taskname    STRING   `db:"taskname"`
@@ -322,8 +341,25 @@ func (t *TASKQ) _allocTaskByName(nameprefix string, maxcount int) {
 	var err error
 	err = t.db.ExecInTx(func(conn *dbserver.Conn) error {
 		timeNow := easysql.NewDateTime(time.Now())
-		szSQL := fmt.Sprintf(`SELECT taskid,taskname,lastruntime,nextruntime,content,fails FROM %s WHERE nextruntime <= ? and working=false and taskname like ? order by nextruntime asc limit ? FOR UPDATE`, t.tableName)
-		if err := conn.Select(&taskarray, szSQL, timeNow, nameprefix+"%", maxcount); err != nil {
+
+		args := make([]interface{}, 0, len(nameprefix)+5)
+		szSQL := fmt.Sprintf(`SELECT taskid,taskname,lastruntime,nextruntime,content,fails FROM %s WHERE nextruntime <= ? and working=false`, t.tableName)
+		args = append(args, timeNow)
+
+		szSQL += ` and (`
+		for i, name := range nameprefix {
+			if i == 0 {
+				szSQL += `taskname LIKE ?`
+				args = append(args, name+"%")
+			} else {
+				szSQL += ` OR taskname like ?`
+				args = append(args, name+"%")
+			}
+		}
+		szSQL += `) ORDER BY nextruntime asc limit ? FOR UPDATE`
+		args = append(args, maxcount)
+
+		if err := conn.Select(&taskarray, szSQL, args...); err != nil {
 			return err
 		}
 
@@ -351,7 +387,6 @@ func (t *TASKQ) _allocTaskByName(nameprefix string, maxcount int) {
 
 	for _, task := range taskarray {
 		mp := make(map[string]interface{})
-		mp["nameprefix"] = nameprefix
 		mp["taskid"] = task.Taskid.String()
 		mp["taskname"] = task.Taskname.String()
 		mp["lastruntime"] = task.Lastruntime.ToTime()
@@ -364,7 +399,6 @@ func (t *TASKQ) _allocTaskByName(nameprefix string, maxcount int) {
 	return
 }
 
-//执行超时的任务(通常是执行端意外崩溃)重新加入调度
 func (t *TASKQ) _updateTaskStatus() {
 	defer t.Recover()
 
@@ -467,12 +501,22 @@ func (t *TASKQ) _removeFromRefreshTaskList(taskid string) {
 func (t *TASKQ) _handleOneTask(mp map[string]interface{}) {
 	var err error
 
-	nameprefix := mp["nameprefix"].(string)
 	taskid := mp["taskid"].(string)
 	taskname := mp["taskname"].(string)
 	fails := mp["fails"].(int)
 
-	handlerFn := t.mpSub[nameprefix]
+	var fn FnHandler = nil
+
+	for prefix, h := range t.mpSub {
+		if strings.HasPrefix(taskname, prefix) {
+			fn = h
+			break
+		}
+	}
+
+	if fn == nil {
+		return
+	}
 
 	obj := &internalTaskImpl{
 		info:         mp,
@@ -483,7 +527,7 @@ func (t *TASKQ) _handleOneTask(mp map[string]interface{}) {
 	t._addToRefreshTaskList(taskid)
 	defer t._removeFromRefreshTaskList(taskid)
 
-	err = handlerFn(obj)
+	err = fn(obj)
 
 	if err == nil {
 		fails = 0
@@ -552,7 +596,6 @@ func (t *internalTaskImpl) SetContent(content string) error {
 	return t.fnSetContent(taskid, content)
 }
 
-//连续(执行)失败的次数
 func (t *internalTaskImpl) GetExecFailCount() int {
 	return t.info["fails"].(int)
 }
